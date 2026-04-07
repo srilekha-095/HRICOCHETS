@@ -34,16 +34,6 @@ export function Footer({ onGoAbout, onGoProducts, onGoCollections }: FooterProps
                 <img src={instagramIcon} alt="Instagram" className="h-5 w-5" />
               </a>
 
-              {/* WhatsApp */}
-              <a
-                href="https://wa.me/917439494766"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="w-10 h-10 rounded-full bg-white/10 hover:bg-[#25D366] flex items-center justify-center transition-all hover:scale-110"
-                aria-label="WhatsApp"
-              >
-                <img src={whatsappIcon} alt="WhatsApp" className="h-5 w-5" />
-              </a>
             </div>
           </div>
 
