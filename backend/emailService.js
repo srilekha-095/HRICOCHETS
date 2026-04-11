@@ -2,31 +2,110 @@ import nodemailer from "nodemailer";
 import dotenv from "dotenv";
 dotenv.config();
 
-// Create transporter
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: Number(process.env.SMTP_PORT || 587),
-  secure: false,
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-});
+const smtpPort = Number(process.env.SMTP_PORT || 587);
+const smtpSecure = process.env.SMTP_SECURE === "true" || smtpPort === 465;
+const smtpConfigured = Boolean(
+  process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS
+);
+
+// Create transporter (only when SMTP is configured)
+const transporter = smtpConfigured
+  ? nodemailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: smtpPort,
+      secure: smtpSecure,
+      auth: {
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS,
+      },
+    })
+  : null;
+
+const resendConfigured = Boolean(process.env.RESEND_API_KEY);
+if (resendConfigured) {
+  console.log("✓ Resend email API enabled");
+}
+
+if (transporter) {
+  transporter
+    .verify()
+    .then(() => console.log("✓ SMTP transport ready"))
+    .catch((err) => console.error("✗ SMTP transport error:", err.message));
+}
 
 // Owner emails (comma-separated)
 const getOwnerEmails = () => {
-  const emails = process.env.OWNER_EMAILS || process.env.SMTP_USER;
-  return emails.split(',').map(e => e.trim());
+  const emails = process.env.OWNER_EMAILS || process.env.SMTP_USER || "";
+  return emails
+    .split(",")
+    .map((e) => e.trim())
+    .filter(Boolean);
 };
 const OWNER_NAME = process.env.OWNER_NAME || "Hrishika";
 const SHOP_NAME = process.env.SHOP_NAME || "HriCochets";
+
+const getFromAddress = () => {
+  const fromEmail = process.env.FROM_EMAIL || process.env.SMTP_USER;
+  return fromEmail ? `"${SHOP_NAME}" <${fromEmail}>` : undefined;
+};
+
+const normalizeToList = (to) => {
+  if (Array.isArray(to)) return to;
+  return String(to)
+    .split(",")
+    .map((t) => t.trim())
+    .filter(Boolean);
+};
+
+const sendWithResend = async ({ from, to, subject, html }) => {
+  const payload = {
+    from,
+    to: normalizeToList(to),
+    subject,
+    html,
+  };
+
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Resend API error ${response.status}: ${text}`);
+  }
+
+  const data = await response.json();
+  return { messageId: data?.id };
+};
+
+const sendEmail = async (mailOptions) => {
+  const from = mailOptions.from || getFromAddress();
+  if (!from) {
+    throw new Error("Email sender address is not configured");
+  }
+
+  if (resendConfigured) {
+    return sendWithResend({ ...mailOptions, from });
+  }
+
+  if (transporter) {
+    return transporter.sendMail({ ...mailOptions, from });
+  }
+
+  throw new Error("No email transport configured (set RESEND_API_KEY or SMTP_*)");
+};
 
 // ==================== USER EMAILS ====================
 
 // Send welcome email after signup
 export async function sendWelcomeEmail(user) {
   const mailOptions = {
-    from: `"${SHOP_NAME}" <${process.env.FROM_EMAIL}>`,
+    from: getFromAddress(),
     to: user.email,
     subject: `Welcome to ${SHOP_NAME}! 🎉`,
     html: `
@@ -85,7 +164,7 @@ export async function sendWelcomeEmail(user) {
   };
 
   try {
-    await transporter.sendMail(mailOptions);
+    await sendEmail(mailOptions);
     console.log(`✓ Welcome email sent to ${user.email}`);
   } catch (error) {
     console.error(`✗ Failed to send welcome email to ${user.email}:`, error.message);
@@ -95,7 +174,7 @@ export async function sendWelcomeEmail(user) {
 // Send login notification
 export async function sendLoginNotification(user) {
   const mailOptions = {
-    from: `"${SHOP_NAME}" <${process.env.FROM_EMAIL}>`,
+    from: getFromAddress(),
     to: user.email,
     subject: `Login detected on your ${SHOP_NAME} account`,
     html: `
@@ -137,7 +216,7 @@ export async function sendLoginNotification(user) {
   };
 
   try {
-    await transporter.sendMail(mailOptions);
+    await sendEmail(mailOptions);
     console.log(`✓ Login notification sent to ${user.email}`);
   } catch (error) {
     console.error(`✗ Failed to send login notification:`, error.message);
@@ -161,7 +240,7 @@ export async function sendOrderConfirmation(order, customerEmail) {
   `).join('');
 
   const mailOptions = {
-    from: `"${SHOP_NAME}" <${process.env.FROM_EMAIL}>`,
+    from: getFromAddress(),
     to: customerEmail,
     subject: `Order Confirmation - ${order.id} 🎉`,
     html: `
@@ -248,7 +327,7 @@ export async function sendOrderConfirmation(order, customerEmail) {
   };
 
   try {
-    await transporter.sendMail(mailOptions);
+    await sendEmail(mailOptions);
     console.log(`✓ Order confirmation sent to ${customerEmail}`);
   } catch (error) {
     console.error(`✗ Failed to send order confirmation:`, error.message);
@@ -258,7 +337,7 @@ export async function sendOrderConfirmation(order, customerEmail) {
 // Send custom order confirmation to customer
 export async function sendCustomOrderConfirmation(customOrder) {
   const mailOptions = {
-    from: `"${SHOP_NAME}" <${process.env.FROM_EMAIL}>`,
+    from: getFromAddress(),
     to: customOrder.email,
     subject: `Custom Order Request Received - ${customOrder.request_id} 🎨`,
     html: `
@@ -321,7 +400,7 @@ export async function sendCustomOrderConfirmation(customOrder) {
   };
 
   try {
-    await transporter.sendMail(mailOptions);
+    await sendEmail(mailOptions);
     console.log(`✓ Custom order confirmation sent to ${customOrder.email}`);
   } catch (error) {
     console.error(`✗ Failed to send custom order confirmation:`, error.message);
@@ -343,8 +422,9 @@ export async function sendOwnerOrderNotification(order, customerEmail) {
   `).join('');
 
   const mailOptions = {
-    from: `"${SHOP_NAME} System" <${process.env.FROM_EMAIL}>`,
+    from: getFromAddress() ? getFromAddress().replace(`"${SHOP_NAME}"`, `"${SHOP_NAME} System"`) : undefined,
     to: getOwnerEmails().join(','),
+    replyTo: customerEmail,
     subject: `🔔 NEW ORDER: ${order.id} - Rs.${order.total.toFixed(2)}`,
     html: `
       <!DOCTYPE html>
@@ -428,7 +508,7 @@ export async function sendOwnerOrderNotification(order, customerEmail) {
   };
 
   try {
-    await transporter.sendMail(mailOptions);
+    await sendEmail(mailOptions);
     console.log(`✓ Owner notification sent for order ${order.id}`);
   } catch (error) {
     console.error(`✗ Failed to send owner notification:`, error.message);
@@ -438,8 +518,9 @@ export async function sendOwnerOrderNotification(order, customerEmail) {
 // Send custom order request to owner
 export async function sendOwnerCustomOrderNotification(customOrder) {
   const mailOptions = {
-    from: `"${SHOP_NAME} System" <${process.env.FROM_EMAIL}>`,
+    from: getFromAddress() ? getFromAddress().replace(`"${SHOP_NAME}"`, `"${SHOP_NAME} System"`) : undefined,
     to: getOwnerEmails().join(','),
+    replyTo: customOrder.email,
     subject: `🎨 NEW CUSTOM ORDER REQUEST: ${customOrder.request_id}`,
     html: `
       <!DOCTYPE html>
@@ -514,7 +595,7 @@ export async function sendOwnerCustomOrderNotification(customOrder) {
   };
 
   try {
-    await transporter.sendMail(mailOptions);
+    await sendEmail(mailOptions);
     console.log(`✓ Owner notification sent for custom order ${customOrder.request_id}`);
   } catch (error) {
     console.error(`✗ Failed to send owner custom order notification:`, error.message);
@@ -524,8 +605,9 @@ export async function sendOwnerCustomOrderNotification(customOrder) {
 // Send new signup notification to owner
 export async function sendOwnerNewUserNotification(user) {
   const mailOptions = {
-    from: `"${SHOP_NAME} System" <${process.env.FROM_EMAIL}>`,
+    from: getFromAddress() ? getFromAddress().replace(`"${SHOP_NAME}"`, `"${SHOP_NAME} System"`) : undefined,
     to: getOwnerEmails().join(','),
+    replyTo: user.email,
     subject: `👤 New User Signup: ${user.name}`,
     html: `
       <!DOCTYPE html>
@@ -566,7 +648,7 @@ export async function sendOwnerNewUserNotification(user) {
   };
 
   try {
-    await transporter.sendMail(mailOptions);
+    await sendEmail(mailOptions);
     console.log(`✓ Owner notified of new user: ${user.email}`);
   } catch (error) {
     console.error(`✗ Failed to send owner new user notification:`, error.message);
@@ -592,7 +674,7 @@ export async function sendOrderCancellationEmail(order, customerEmail) {
   `).join('');
 
   const mailOptions = {
-    from: `"${process.env.SHOP_NAME || 'HriCochets'}" <${process.env.FROM_EMAIL}>`,
+    from: getFromAddress(),
     to: customerEmail,
     subject: `Order Cancelled - ${order.id} ❌`,
     html: `
@@ -703,7 +785,7 @@ export async function sendOrderCancellationEmail(order, customerEmail) {
   };
 
   try {
-    const info = await transporter.sendMail(mailOptions);
+    const info = await sendEmail(mailOptions);
     console.log(`✓ Order cancellation email sent to ${customerEmail}`, info.messageId);
     return { success: true, messageId: info.messageId };
   } catch (error) {
@@ -727,8 +809,9 @@ export async function sendOwnerOrderCancellationNotification(order, customerEmai
   const ownerEmails = getOwnerEmails();
   
   const mailOptions = {
-    from: `"${process.env.SHOP_NAME || 'HriCochets'} System" <${process.env.FROM_EMAIL}>`,
+    from: getFromAddress() ? getFromAddress().replace(`"${SHOP_NAME}"`, `"${SHOP_NAME} System"`) : undefined,
     to: ownerEmails.join(', '),
+    replyTo: customerEmail,
     subject: `🚨 ORDER CANCELLED: ${order.id} - Rs.${order.total.toFixed(2)}`,
     html: `
       <!DOCTYPE html>
@@ -865,7 +948,7 @@ export async function sendOwnerOrderCancellationNotification(order, customerEmai
   };
 
   try {
-    const info = await transporter.sendMail(mailOptions);
+    const info = await sendEmail(mailOptions);
     console.log(`✓ Owner cancellation notification sent to ${ownerEmails.length} owner(s) for order ${order.id}`, info.messageId);
     return { success: true, messageId: info.messageId };
   } catch (error) {

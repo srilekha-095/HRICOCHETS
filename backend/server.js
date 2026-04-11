@@ -2,11 +2,14 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import http from "http";
+import jwt from "jsonwebtoken";
 import { pool, initDB } from "./db.js";
 import authRoutes from "./routes/auth.js";
 import * as emailService from "./emailService.js";
 
 dotenv.config();
+
+const JWT_SECRET = process.env.JWT_SECRET || "changeme";
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -91,33 +94,51 @@ app.get('/api/products/category/:category', async (req, res) => {
 // Submit custom order request
 app.post('/api/custom-orders', async (req, res) => {
   try {
-    const { name, email, phone, description, budget, urgency } = req.body;
-    
+    const { name: bodyName, email: bodyEmail, phone: bodyPhone, description, budget, urgency } = req.body;
+
+    // If Authorization header present, try to use authenticated user's email
+    let email = bodyEmail;
+    try {
+      const authHeader = req.headers.authorization;
+      if (authHeader) {
+        const token = authHeader.split(' ')[1];
+        if (token) {
+          const decoded = jwt.verify(token, JWT_SECRET);
+          if (decoded && decoded.email) email = decoded.email;
+        }
+      }
+    } catch (err) {
+      // ignore token errors and fall back to provided email
+    }
+
+    const name = bodyName || 'Customer';
+    const phone = bodyPhone || '';
+
     if (!name || !email || !description) {
       return res.status(400).json({ error: 'Name, email, and description are required' });
     }
-    
+
     const requestId = `REQ-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-    
+
     const result = await pool.query(
       `INSERT INTO custom_orders (request_id, name, email, phone, description, budget, urgency, status, created_at) 
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW()) 
        RETURNING *`,
       [requestId, name, email, phone, description, budget || null, urgency || 'normal', 'pending']
     );
-    
+
     const customOrder = result.rows[0];
-    
+
     // Send confirmation emails
     await emailService.sendCustomOrderConfirmation(customOrder);
     await emailService.sendOwnerCustomOrderNotification(customOrder);
-    
+
     res.status(201).json({
       success: true,
       message: 'Custom order request submitted successfully',
       requestId: customOrder.request_id
     });
-    
+
   } catch (error) {
     console.error('Error creating custom order:', error);
     res.status(500).json({ error: 'Failed to submit custom order request' });
